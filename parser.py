@@ -1,6 +1,7 @@
 import sys
 import re
 import os
+from pprint import pprint
 from typing import Any, List, Dict, Optional
 
 class RefResolver:
@@ -69,7 +70,7 @@ def parse_lines(lines: List[str], indent: int = 0) -> Any:
             field = clean_field_line.split(':')[0].strip()[1:]
             after_colon = clean_field_line.split(':', 1)[1].strip()
             if after_colon:
-                value = parse_value(after_colon)
+                value = parse_value_or_list(after_colon)
                 result[field] = value
             else:
                 if lines and (len(lines[0]) - len(lines[0].lstrip(' '))) > field_indent:
@@ -136,6 +137,12 @@ def parse_value(value: str) -> Any:
         return False
     else:
         return value
+
+def parse_value_or_list(text: str) -> Any:
+    tokens = tokenize_values(text)
+    if len(tokens) == 1:
+        return parse_value(tokens[0])
+    return [parse_value(t) for t in tokens]
 
 def parse_inline_values(lines: List[str], indent: int) -> List[Any]:
     items = []
@@ -216,4 +223,4 @@ if __name__ == "__main__":
     
     final_data = resolver.process(raw_data, base_name)
     
-    print(final_data)
+    pprint(final_data)
