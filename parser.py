@@ -1,7 +1,6 @@
 import sys
 import re
 import os
-from pprint import pprint
 from typing import Any, List, Dict, Optional
 
 class RefResolver:
@@ -217,4 +216,4 @@ if __name__ == "__main__":
     
     final_data = resolver.process(raw_data, base_name)
     
-    pprint(final_data)
+    print(final_data)
