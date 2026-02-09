@@ -1,0 +1,2 @@
+.oneIPaddr : information.someIPaddresses[0] <here you can see that i referenced the file and it's field directly in this one>
+<this allows for a fine control over data>
