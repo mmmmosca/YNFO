@@ -69,6 +69,11 @@ Inside of a second file we can reference these fields as values:
 .adminPwd : server_info.admin.password
 ```
 
+You can also reference fields within the same file by either writing the name of the file or using `self`, for example:
+```
+self.admin.password
+```
+
 ## Comments
 YNFO has support for inline comments.
 ```
