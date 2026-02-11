@@ -43,7 +43,7 @@
 
 .my_string [String] : "this is a string"
 
-.should_produce_an_error [Bool] : true
+.should_produce_an_error [Float] : true
 
 .any_type [Any] : 3.14
 
@@ -51,3 +51,4 @@
 
 [List][Int] :
     1 2 3 4
+
