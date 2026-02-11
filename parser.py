@@ -5,7 +5,6 @@ from pprint import pprint
 from typing import Any, List, Dict, Optional
 
 MISSING = object()
-UNNAMED_KEY = "__unnamed__"
 
 class RefResolver:
     def __init__(self):
@@ -21,7 +20,7 @@ class RefResolver:
             with open(path, "r") as f:
                 content = f.read()
             lines = content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
-            self.cache[filename] = parse_lines(lines, allow_top_level_scalar=True, unnamed_container=False)
+            self.cache[filename] = parse_lines(lines, allow_top_level_scalar=True)
         return self.cache[filename]
 
     def resolve_path(self, data: Any, path: str) -> Any:
@@ -71,9 +70,10 @@ def parse_lines(
     lines: List[str],
     indent: int = 0,
     allow_top_level_scalar: bool = False,
-    unnamed_container: bool = False,
 ) -> Any:
-    result = {}
+    entries = []
+    seen_fields = set()
+    seen_unnamed = False
     i = 0
     
     while i < len(lines):
@@ -112,7 +112,7 @@ def parse_lines(
                         break
                 
                 if colon_pos >= 0:
-                    field_name = field_content[:colon_pos].strip()
+                    field_schema_part = field_content[:colon_pos].strip()
                     value_part = field_content[colon_pos + 1:].strip()
                 else:
                     raise SyntaxError(f"Missing ':' in field declaration: {clean_line.strip()}")
@@ -122,11 +122,17 @@ def parse_lines(
 
             i += 1
 
+            if ':' not in field_content:
+                field_schema_part = field_content.strip()
+
+            field_name, schema_tokens = parse_field_schema(field_schema_part)
+
             if not field_name:
                 raise SyntaxError(f"Missing field name: {clean_line.strip()}")
 
-            if field_name in result:
+            if field_name in seen_fields:
                 raise ValueError(f"Duplicate key: {field_name}")
+            seen_fields.add(field_name)
             
             
             nested_lines = []
@@ -146,7 +152,9 @@ def parse_lines(
             
             if value_part:
 
-                result[field_name] = parse_value_or_list(value_part)
+                value = parse_value_or_list(value_part)
+                validate_schema(schema_tokens, value, field_name)
+                entries.append(("field", field_name, value))
 
                 if nested_lines:
                     pass
@@ -155,23 +163,31 @@ def parse_lines(
                     first_nested_clean = strip_inline_comment(nested_lines[0].rstrip())
 
                     if first_nested_clean.lstrip().startswith('.'):
-                        result[field_name] = parse_lines(
+                        value = parse_lines(
                             nested_lines,
                             indent=current_indent + 1,
                             allow_top_level_scalar=False,
-                            unnamed_container=False,
                         )
                     elif first_nested_clean.lstrip().startswith(':'):
-                        result[field_name] = parse_list(nested_lines, indent=current_indent + 1)
+                        value = parse_list(nested_lines, indent=current_indent + 1)
                     elif first_nested_clean.lstrip().startswith('-'):
-                        result[field_name] = parse_list(nested_lines, indent=current_indent + 1)
+                        value = parse_list(nested_lines, indent=current_indent + 1)
                     else:
-                        result[field_name] = parse_list(nested_lines, indent=current_indent + 1)
+                        value = parse_list(nested_lines, indent=current_indent + 1)
                 else:
-                    result[field_name] = ""
-        elif clean_line.lstrip().startswith(':'):
+                    value = ""
+                validate_schema(schema_tokens, value, field_name)
+                entries.append(("field", field_name, value))
+        elif clean_line.lstrip().startswith(':') or clean_line.lstrip().startswith('['):
             # Unnamed field/list item at this level
-            item_content = clean_line.lstrip()[1:].strip()
+            if clean_line.lstrip().startswith(':'):
+                item_content = clean_line.lstrip()[1:].strip()
+                schema_tokens, item_content = parse_unnamed_schema(item_content)
+            else:
+                schema_tokens, rest = parse_schema_prefix(clean_line.lstrip())
+                if not rest.startswith(':'):
+                    raise SyntaxError(f"Missing ':' after schema: {clean_line.strip()}")
+                item_content = rest[1:].lstrip()
 
             nested_lines = []
             i += 1
@@ -189,6 +205,7 @@ def parse_lines(
 
             if item_content:
                 item_value = parse_value_or_list(item_content)
+                validate_schema(schema_tokens, item_value, "<unnamed>")
                 if nested_lines:
                     first_nested = strip_inline_comment(nested_lines[0].rstrip())
                     if first_nested.lstrip().startswith('.'):
@@ -196,38 +213,39 @@ def parse_lines(
                             nested_lines,
                             indent=current_indent + 1,
                             allow_top_level_scalar=False,
-                            unnamed_container=True,
                         )
                         if isinstance(item_value, dict):
                             item_value.update(nested_obj)
-                            _add_unnamed_item(result, item_value)
+                            entries.append(("unnamed", item_value))
                         else:
-                            _add_unnamed_item(result, {'value': item_value, **nested_obj})
+                            entries.append(("unnamed", {'value': item_value, **nested_obj}))
                     else:
                         nested_list = parse_list(nested_lines, indent=current_indent + 1)
-                        _add_unnamed_item(result, {'value': item_value, 'items': nested_list})
+                        entries.append(("unnamed", {'value': item_value, 'items': nested_list}))
                 else:
-                    _add_unnamed_item(result, item_value, expand_list=not unnamed_container)
+                    entries.append(("unnamed", item_value))
             else:
                 if nested_lines:
                     first_nested = strip_inline_comment(nested_lines[0].rstrip())
                     if first_nested.lstrip().startswith('.'):
-                        _add_unnamed_item(
-                            result,
-                            parse_lines(
-                                nested_lines,
-                                indent=current_indent + 1,
-                                allow_top_level_scalar=False,
-                                unnamed_container=True,
-                            ),
+                        unnamed_value = parse_lines(
+                            nested_lines,
+                            indent=current_indent + 1,
+                            allow_top_level_scalar=False,
                         )
+                        validate_schema(schema_tokens, unnamed_value, "<unnamed>")
+                        entries.append(("unnamed", unnamed_value))
                     else:
-                        _add_unnamed_item(result, parse_list(nested_lines, indent=current_indent + 1))
+                        unnamed_value = parse_list(nested_lines, indent=current_indent + 1)
+                        validate_schema(schema_tokens, unnamed_value, "<unnamed>")
+                        entries.append(("unnamed", unnamed_value))
                 else:
-                    _add_unnamed_item(result, [])
+                    validate_schema(schema_tokens, [], "<unnamed>")
+                    entries.append(("unnamed", []))
+            seen_unnamed = True
         else:
-            if not result and allow_top_level_scalar:
-                if clean_line.lstrip().startswith((':', '-')):
+            if not entries and allow_top_level_scalar:
+                if clean_line.lstrip().startswith('-'):
                     return parse_list(lines[i:], indent=current_indent)
                 values = []
                 while i < len(lines):
@@ -263,18 +281,24 @@ def parse_lines(
                 return values
             else:
                 raise SyntaxError(f"Unexpected line (missing '.' or ':'): {clean_line.strip()}")
-    
-    if result and UNNAMED_KEY in result:
-        unnamed_list = result[UNNAMED_KEY]
-        if unnamed_container and len(result) > 1:
-            named_part = {k: v for k, v in result.items() if k != UNNAMED_KEY}
-            return [named_part] + unnamed_list
-        if set(result.keys()) == {UNNAMED_KEY}:
-            if len(unnamed_list) == 1:
-                return unnamed_list[0]
-            return unnamed_list
 
-    return result
+    if not entries:
+        return {}
+    if not seen_unnamed:
+        return {name: value for _, name, value in entries}
+
+    list_out = []
+    for entry in entries:
+        if entry[0] == "field":
+            _, name, value = entry
+            list_out.append({name: value})
+        else:
+            _, value = entry
+            list_out.append(value)
+
+    if len(list_out) == 1 and entries[0][0] == "unnamed":
+        return list_out[0]
+    return list_out
 
 
 def parse_list(lines: List[str], indent: int) -> List[Any]:
@@ -327,7 +351,6 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                             nested_lines,
                             indent=current_indent + 1,
                             allow_top_level_scalar=False,
-                            unnamed_container=False,
                         )
                         if isinstance(item_value, dict):
                             item_value.update(nested_obj)
@@ -354,15 +377,21 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                                 nested_lines,
                                 indent=current_indent + 1,
                                 allow_top_level_scalar=False,
-                                unnamed_container=False,
                             )
                         )
                     else:
                         items.append(parse_list(nested_lines, indent=current_indent + 1))
                 else:
                     items.append("")
-        elif clean_line.lstrip().startswith(':'):
-            item_content = clean_line.lstrip()[1:].strip()
+        elif clean_line.lstrip().startswith(':') or clean_line.lstrip().startswith('['):
+            if clean_line.lstrip().startswith(':'):
+                item_content = clean_line.lstrip()[1:].strip()
+                schema_tokens, item_content = parse_unnamed_schema(item_content)
+            else:
+                schema_tokens, rest = parse_schema_prefix(clean_line.lstrip())
+                if not rest.startswith(':'):
+                    raise SyntaxError(f"Missing ':' after schema: {clean_line.strip()}")
+                item_content = rest[1:].lstrip()
 
             nested_lines = []
             i += 1
@@ -380,6 +409,7 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
 
             if item_content:
                 item_value = parse_value_or_list(item_content)
+                validate_schema(schema_tokens, item_value, "<unnamed>")
                 if nested_lines:
                     first_nested = strip_inline_comment(nested_lines[0].rstrip())
                     if first_nested.lstrip().startswith('.'):
@@ -398,10 +428,15 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                 if nested_lines:
                     first_nested = strip_inline_comment(nested_lines[0].rstrip())
                     if first_nested.lstrip().startswith('.'):
-                        items.append(parse_lines(nested_lines, indent=current_indent + 1, allow_top_level_scalar=False))
+                        unnamed_value = parse_lines(nested_lines, indent=current_indent + 1, allow_top_level_scalar=False)
+                        validate_schema(schema_tokens, unnamed_value, "<unnamed>")
+                        items.append(unnamed_value)
                     else:
-                        items.append(parse_list(nested_lines, indent=current_indent + 1))
+                        unnamed_value = parse_list(nested_lines, indent=current_indent + 1)
+                        validate_schema(schema_tokens, unnamed_value, "<unnamed>")
+                        items.append(unnamed_value)
                 else:
+                    validate_schema(schema_tokens, [], "<unnamed>")
                     items.append([])
         elif clean_line.lstrip().startswith('.'):
             nested_lines = [line]
@@ -423,7 +458,6 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                     nested_lines,
                     indent=current_indent,
                     allow_top_level_scalar=False,
-                    unnamed_container=False,
                 )
             )
         else:
@@ -473,6 +507,119 @@ def parse_value_or_list(text: str) -> Any:
         return parse_value(tokens[0])
     
     return [parse_value(t) for t in tokens]
+
+
+def parse_field_schema(text: str) -> tuple[str, List[str]]:
+    if '[' not in text:
+        return text.strip(), []
+    name_part, schema_part = text.split('[', 1)
+    name_part = name_part.strip()
+    schema_part = '[' + schema_part
+    tokens = parse_schema_tokens(schema_part)
+    return name_part, tokens
+
+
+def parse_unnamed_schema(text: str) -> tuple[List[str], str]:
+    tokens, rest = parse_schema_prefix(text)
+    if rest.startswith(':'):
+        rest = rest[1:].lstrip()
+    return tokens, rest
+
+
+def parse_schema_prefix(text: str) -> tuple[List[str], str]:
+    tokens = []
+    i = 0
+    text_len = len(text)
+    while i < text_len:
+        while i < text_len and text[i].isspace():
+            i += 1
+        if i >= text_len or text[i] != '[':
+            break
+        end = text.find(']', i + 1)
+        if end == -1:
+            raise SyntaxError(f"Unterminated schema token in: {text}")
+        token = text[i + 1:end].strip()
+        if not token:
+            raise SyntaxError(f"Empty schema token in: {text}")
+        tokens.append(token)
+        i = end + 1
+    rest = text[i:].lstrip()
+    if tokens:
+        validate_schema_tokens(tokens)
+    return tokens, rest
+
+
+def parse_schema_tokens(text: str) -> List[str]:
+    tokens, rest = parse_schema_prefix(text)
+    if rest:
+        raise SyntaxError(f"Invalid schema syntax: {text}")
+    return tokens
+
+
+def validate_schema_tokens(tokens: List[str]) -> None:
+    allowed = {"String", "Float", "Int", "Bool", "Any", "List", "Ip"}
+    for t in tokens:
+        if t not in allowed:
+            raise SyntaxError(f"Unknown schema type: {t}")
+    if tokens and tokens[0] != "List" and len(tokens) > 1:
+        raise SyntaxError("Only List can chain multiple types.")
+
+
+def build_schema(tokens: List[str]) -> Dict[str, Any]:
+    if not tokens:
+        return {"kind": "any"}
+    first = tokens[0]
+    if first != "List":
+        return {"kind": "type", "name": first}
+    if len(tokens) == 1:
+        return {"kind": "list", "element": {"kind": "any"}}
+    if tokens[1] == "List":
+        return {"kind": "list", "element": build_schema(tokens[1:])}
+    element_types = []
+    for t in tokens[1:]:
+        if t == "List":
+            raise SyntaxError("List must be the first type in a list schema.")
+        element_types.append({"kind": "type", "name": t})
+    return {"kind": "list", "element": {"kind": "union", "types": element_types}}
+
+
+def validate_schema(tokens: List[str], value: Any, context: str) -> None:
+    if not tokens:
+        return
+    schema = build_schema(tokens)
+    if not validate_value(schema, value):
+        raise ValueError(f"Schema mismatch for {context}: expected {tokens}, got {type(value).__name__}")
+
+
+def validate_value(schema: Dict[str, Any], value: Any) -> bool:
+    kind = schema["kind"]
+    if kind == "any":
+        return True
+    if kind == "type":
+        name = schema["name"]
+        if name == "String":
+            return isinstance(value, str) and not isinstance(value, IP)
+        if name == "Ip":
+            return isinstance(value, IP)
+        if name == "Float":
+            return isinstance(value, float)
+        if name == "Int":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if name == "Bool":
+            return isinstance(value, bool)
+        if name == "Any":
+            return True
+        if name == "List":
+            return isinstance(value, list)
+        return False
+    if kind == "union":
+        return any(validate_value(t, value) for t in schema["types"])
+    if kind == "list":
+        if not isinstance(value, list):
+            return False
+        element_schema = schema["element"]
+        return all(validate_value(element_schema, v) for v in value)
+    return False
 
 
 def parse_inline_values(lines: List[str], indent: int) -> List[Any]:
@@ -567,19 +714,6 @@ def is_ip(value: str) -> bool:
     return True
 
 
-def _add_unnamed_item(result: Dict[str, Any], item: Any, expand_list: bool = False) -> None:
-    if isinstance(item, dict):
-        for key in item:
-            if key in result:
-                raise ValueError(f"Duplicate key: {key}")
-        result.update(item)
-        return
-
-    unnamed_list = result.setdefault(UNNAMED_KEY, [])
-    if expand_list and isinstance(item, list):
-        unnamed_list.extend(item)
-    else:
-        unnamed_list.append(item)
 
 
 if __name__ == "__main__":
