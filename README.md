@@ -18,7 +18,9 @@ There are three main reasons as to why you should use it in your next project:
 3. It's easily readable by humans
 
 Here's a quick comparison with JSON:
-json```
+
+JSON
+```
 {
   "server": {
     "ip": "192.168.1.10",
@@ -35,8 +37,8 @@ json```
   ]
 }
 ```
-
-ynfo```
+YNFO
+```
 .server :
     .ip : 192.168.1.10
     .port : 8080
@@ -54,8 +56,8 @@ ynfo```
     : 1 2 3
     : 4 5 6
 ```
-
-ynfo+schema```
+YNFO+schema
+```
 .server :
     .ip [Ip] : 192.168.1.10
     .port [Int] : 8080
