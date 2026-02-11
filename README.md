@@ -8,6 +8,8 @@ This format allows for:
 - Referencing fields from other files
 - Flexible syntax
 
+**It is important that your files don't start with a number, otherwise the parser will throw an error**
+
 ## Fields
 A field, in terms of JavaScript, can be compared to an object, where it can contain:
 - Other fields
@@ -18,8 +20,8 @@ A field is defined just like below:
 ```
 .myField : "myValue"
 ```
-Fields are dynamically typed and support integers, floats, strings and booleans.
-Everything that isn't recognized as any of those is automatically set as a string.
+Fields are dynamically typed and support integers, floats, strings, booleans and IPs.
+Everything that isn't recognized will throw an error.
 
 ## Lists
 A list is a field with multiple elements separated by any whitespace.
@@ -45,6 +47,25 @@ The syntax is similar to lists:
 .myField :
   .mySecondField : 3.14
   .myThirdField : true
+```
+
+## Anonymous fields/lists
+Fields can also be anonymous, this is useful for (using JS terminology) plain objects or making nested lists, just like in this example:
+```
+.nestedLists :
+  : 1 2 3
+  : 4 5 6
+  : 7 8 9
+```
+Which is equivalent to this:
+```
+{
+  'nestedLists': [
+    [1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 9]
+  ]
+}
 ```
 
 ## Referencing
