@@ -17,6 +17,63 @@ There are three main reasons as to why you should use it in your next project:
 
 3. It's easily readable by humans
 
+Here's a quick comparison with JSON:
+json```
+{
+  "server": {
+    "ip": "192.168.1.10",
+    "port": 8080
+  },
+  "users": ["alice", "bob", "charlie"],
+  "features": {
+    "logging": true,
+    "maxConnections": 100
+  },
+  "nestedLists": [
+    [1, 2, 3],
+    [4, 5, 6]
+  ]
+}
+```
+
+ynfo```
+.server :
+    .ip : 192.168.1.10
+    .port : 8080
+
+.users :
+    "alice"
+    "bob"
+    "charlie"
+
+.features :
+    .logging : true
+    .maxConnections : 100
+
+.nestedLists :
+    : 1 2 3
+    : 4 5 6
+```
+
+ynfo+schema```
+.server :
+    .ip [Ip] : 192.168.1.10
+    .port [Int] : 8080
+
+.users [List][String] :
+    "alice"
+    "bob"
+    "charlie"
+
+.features :
+    .logging [Bool] : true
+    .maxConnections [Int] : 100
+
+.nestedLists [List][List][Int] :
+    : 1 2 3
+    : 4 5 6
+```
+
 **IMPORTANT NOTE: It is important that your files don't start with a number, otherwise the parser will throw you an error**
 
 ## Fields
