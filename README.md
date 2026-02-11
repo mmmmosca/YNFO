@@ -100,3 +100,32 @@ YNFO has support for inline comments.
 ```
 <this is a comment>
 ```
+
+## Schema validation
+YNFO also provides a built-in schema validation system.
+You can specify any of the already mentioned types (String, Int, Float, Bool and Ip) with the addition of a few more:
+- List + one or more optional types (List type included) : Checks if the field is a list containing a certain type of elements
+- Any : Can be any type (it's not necessary to specify)
+
+To write schema validation you can write the type enclosed by square brackets before any colon, like this: `.a_field [Any] : 0`
+
+You can see this sample code to see a practical example:
+```
+.integer_list [List][Int] :
+    1 2 3 4 5 6
+
+.list_of_lists [List][List][Int] :
+    : 1 2 3
+    : 4 5 6
+
+.my_string [String] : "this is a string"
+
+.should_produce_an_error [Bool] : true
+
+.any_type [Any] : 3.14
+
+.an_IP [Ip] : 1.1.1.1
+
+[List][Int] :
+    1 2 3 4
+```
