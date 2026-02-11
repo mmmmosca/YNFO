@@ -6,6 +6,8 @@
 
 .myField4 : 3.14
 
+<this is a comment :D>
+
 .exampleList:
     1
     2
@@ -17,4 +19,35 @@
     .one: 1
     .two: 2
     .three_4_5: 3 4 5
-        
+    
+    .fieldsInMorefields: 
+        .test: 123
+        .test2: 456
+
+.nestedLists:
+    : 1 2 3
+    : 4 5 6
+
+<anonymous fields>
+: "this is an anonymous field"
+
+:
+    : "This is a nested anonymous field"
+
+.integer_list [List][Int] :
+    1 2 3 4 5 6
+
+.list_of_lists [List][List][Int] :
+    : 1 2 3
+    : 4 5 6
+
+.my_string [String] : "this is a string"
+
+.should_produce_an_error [Bool] : true
+
+.any_type [Any] : 3.14
+
+.an_IP [Ip] : 1.1.1.1
+
+[List][Int] :
+    1 2 3 4
