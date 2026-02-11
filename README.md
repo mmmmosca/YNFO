@@ -177,7 +177,7 @@ You can specify any of the already mentioned types (String, Int, Float, Bool and
 
 To write schema validation you can write the type enclosed by square brackets before any colon, like this: `.a_field [Any] : 0`
 
-You can see this sample code to see a practical example:
+You can look at this sample code to see a practical example:
 ```
 .integer_list [List][Int] :
     1 2 3 4 5 6
