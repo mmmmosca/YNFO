@@ -166,6 +166,7 @@ self.admin.password
 
 ## Comments
 YNFO has support for inline comments.
+Typing a text enclosed by angled brackets (`<>`) will turn that text into a comment
 ```
 <this is a comment>
 ```
