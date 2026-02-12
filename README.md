@@ -88,6 +88,7 @@ A field is defined just like below:
 ```
 .myField : "myValue"
 ```
+It's important that in front of the name of the field there's a dot, otherwise an error will be thrown.
 Fields are dynamically typed and support integers, floats, strings, booleans and IPs.
 Everything that isn't recognized will throw an error.
 
