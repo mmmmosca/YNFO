@@ -1,6 +1,7 @@
 import sys
 import re
 import os
+import copy
 from pprint import pprint
 from typing import Any, List, Dict, Optional
 
@@ -8,6 +9,307 @@ MISSING = object()
 
 class QuotedString(str):
     pass
+
+
+def read_text_file(path: str) -> List[str]:
+    with open(path, "r") as f:
+        content = f.read()
+    return content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+
+
+def normalize_input_path(path: str, required_ext: str) -> str:
+    if os.path.exists(path):
+        return path
+    if not path.endswith(required_ext):
+        candidate = f"{path}{required_ext}"
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(f"File not found: {path}")
+
+
+def parse_numeric_bound(raw: str) -> float:
+    bound = raw.strip()
+    if re.match(r"^[+-]?[0-9]+$", bound):
+        return float(int(bound))
+    if re.match(r"^[+-]?[0-9]+\.[0-9]+$", bound):
+        return float(bound)
+    raise SyntaxError(f"Invalid numeric bound in schema constraint: {raw}")
+
+
+def parse_range_constraint(text: str) -> Dict[str, float]:
+    body = text[1:-1].strip()
+    parts = [p.strip() for p in body.split(",")]
+    if len(parts) != 2:
+        raise SyntaxError(f"Range constraint must be '(min,max)': {text}")
+
+    min_v = parse_numeric_bound(parts[0])
+    max_v = parse_numeric_bound(parts[1])
+    if min_v > max_v:
+        raise SyntaxError(f"Invalid range constraint (min > max): {text}")
+    return {"min": min_v, "max": max_v}
+
+
+def constraint_target_type(tokens: List[str]) -> Optional[str]:
+    if not tokens:
+        return None
+
+    idx = 0
+    while idx < len(tokens) and tokens[idx] == "List":
+        idx += 1
+
+    if idx != len(tokens) - 1:
+        return None
+
+    terminal = tokens[idx]
+    if terminal in ("Int", "Float"):
+        return terminal
+    return None
+
+
+def normalize_schema_default_value(value: Any) -> Any:
+    if isinstance(value, QuotedString):
+        return str(value)
+    if isinstance(value, list):
+        return [normalize_schema_default_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: normalize_schema_default_value(v) for k, v in value.items()}
+    return value
+
+
+def split_schema_declaration(
+    text: str
+) -> tuple[str, List[str], bool, Optional[Dict[str, float]], Any]:
+    parts = text.split(None, 1)
+    field_name = parts[0].strip() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    tokens = []
+    optional = False
+    constraint: Optional[Dict[str, float]] = None
+    default_value = MISSING
+
+    if rest:
+        if rest == ":":
+            return field_name, tokens, optional, constraint, default_value
+        tokens, leftover = parse_schema_prefix(rest)
+        leftover = leftover.strip()
+        if leftover.startswith('?'):
+            optional = True
+            leftover = leftover[1:].strip()
+        if leftover.startswith('('):
+            end_idx = leftover.find(')')
+            if end_idx == -1:
+                raise SyntaxError(f"Invalid schema declaration: {text}")
+            constraint_text = leftover[:end_idx + 1]
+            constraint = parse_range_constraint(constraint_text)
+            if constraint_target_type(tokens) is None:
+                raise SyntaxError(f"Range constraints require Int/Float schema: {text}")
+            leftover = leftover[end_idx + 1:].strip()
+        if leftover.startswith(':'):
+            default_text = leftover[1:].strip()
+            if default_text:
+                default_value = normalize_schema_default_value(parse_value_or_list(default_text))
+            leftover = ""
+        if leftover:
+            raise SyntaxError(f"Invalid schema declaration: {text}")
+
+    if default_value is not MISSING:
+        if tokens:
+            validate_schema(tokens, default_value, f"schema default for {field_name}")
+        if constraint is not None:
+            validate_numeric_range_constraint(default_value, constraint, f"schema default for {field_name}")
+
+    return field_name, tokens, optional, constraint, default_value
+
+
+def parse_schema_block(lines: List[str], start: int, indent: int) -> tuple[Dict[str, Any], int]:
+    schema_fields: Dict[str, Any] = {}
+    i = start
+
+    while i < len(lines):
+        line = lines[i]
+        line_without_tabs = line.replace('\t', '    ')
+        current_indent = len(line_without_tabs) - len(line_without_tabs.lstrip(' '))
+
+        clean_line = strip_inline_comment(line.rstrip())
+        if not clean_line.strip():
+            i += 1
+            continue
+
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise SyntaxError(f"Unexpected indentation in schema: {clean_line.strip()}")
+
+        stripped = clean_line.lstrip()
+        if not stripped.startswith('.'):
+            raise SyntaxError(f"Schema lines must start with '.': {clean_line.strip()}")
+
+        declaration = stripped[1:].strip()
+        field_name, schema_tokens, optional, constraint, default_value = split_schema_declaration(declaration)
+        if not field_name:
+            raise SyntaxError(f"Missing field name in schema: {clean_line.strip()}")
+        if field_name in schema_fields:
+            raise ValueError(f"Duplicate schema key: {field_name}")
+
+        i += 1
+        child_lines: List[str] = []
+
+        while i < len(lines):
+            next_line = lines[i]
+            next_without_tabs = next_line.replace('\t', '    ')
+            next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
+
+            clean_next = strip_inline_comment(next_line.rstrip())
+            if not clean_next.strip():
+                child_lines.append(next_line)
+                i += 1
+                continue
+            if next_indent <= current_indent:
+                break
+
+            child_lines.append(next_line)
+            i += 1
+
+        children = None
+        if child_lines:
+            first_indent = None
+            for child in child_lines:
+                child_clean = strip_inline_comment(child.rstrip())
+                if not child_clean.strip():
+                    continue
+                child_no_tabs = child.replace('\t', '    ')
+                first_indent = len(child_no_tabs) - len(child_no_tabs.lstrip(' '))
+                break
+            if first_indent is not None:
+                children, _ = parse_schema_block(child_lines, 0, first_indent)
+
+        schema_fields[field_name] = {
+            "tokens": schema_tokens,
+            "optional": optional,
+            "constraint": constraint,
+            "default": default_value,
+            "children": children,
+        }
+
+    return schema_fields, i
+
+
+def load_yns_schema(schema_file: str) -> Dict[str, Any]:
+    path = normalize_input_path(schema_file, '.yns')
+    lines = read_text_file(path)
+
+    first_indent = None
+    for line in lines:
+        clean = strip_inline_comment(line.rstrip())
+        if not clean.strip():
+            continue
+        line_no_tabs = line.replace('\t', '    ')
+        first_indent = len(line_no_tabs) - len(line_no_tabs.lstrip(' '))
+        break
+
+    if first_indent is None:
+        return {}
+
+    schema_fields, _ = parse_schema_block(lines, 0, first_indent)
+    return schema_fields
+
+
+def validate_against_yns_schema(data: Any, schema_fields: Dict[str, Any], context: str = "root") -> None:
+    if not isinstance(data, dict):
+        raise ValueError(f"Schema mismatch for {context}: expected object, got {type(data).__name__}")
+
+    apply_schema_defaults(data, schema_fields)
+
+    expected = set(schema_fields.keys())
+    actual = set(data.keys())
+
+    missing_required = [
+        key for key, field in schema_fields.items()
+        if not field["optional"] and key not in data
+    ]
+    if missing_required:
+        raise ValueError(f"Schema mismatch for {context}: missing required fields {missing_required}")
+
+    extra = sorted(actual - expected)
+    if extra:
+        raise ValueError(f"Schema mismatch for {context}: unexpected fields {extra}")
+
+    for key, field in schema_fields.items():
+        if key not in data:
+            continue
+        value = data[key]
+        field_context = f"{context}.{key}"
+
+        if field["children"] is not None:
+            validate_against_yns_schema(value, field["children"], field_context)
+
+        tokens = field["tokens"]
+        if tokens:
+            validate_schema(tokens, value, field_context)
+        constraint = field["constraint"]
+        if constraint is not None:
+            validate_numeric_range_constraint(value, constraint, field_context)
+
+
+def apply_schema_defaults(data: Dict[str, Any], schema_fields: Dict[str, Any]) -> None:
+    for key, field in schema_fields.items():
+        if key not in data and field["default"] is not MISSING:
+            data[key] = copy.deepcopy(field["default"])
+
+    for key, field in schema_fields.items():
+        if key not in data:
+            continue
+        if field["children"] is not None and isinstance(data[key], dict):
+            apply_schema_defaults(data[key], field["children"])
+
+
+def validate_numeric_range_constraint(value: Any, constraint: Dict[str, float], context: str) -> None:
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            validate_numeric_range_constraint(item, constraint, f"{context}[{idx}]")
+        return
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Schema mismatch for {context}: range constraint requires numeric value")
+
+    min_v = constraint["min"]
+    max_v = constraint["max"]
+    numeric_value = float(value)
+    if numeric_value < min_v or numeric_value > max_v:
+        raise ValueError(
+            f"Schema mismatch for {context}: value {value} out of allowed range [{min_v:g}, {max_v:g}]"
+        )
+
+
+def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str]]:
+    input_file: Optional[str] = None
+    schema_file: Optional[str] = None
+
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-s", "--schema"):
+            if i + 1 >= len(argv):
+                raise ValueError("Missing schema file after -s/--schema")
+            schema_file = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--schema="):
+            schema_file = arg.split("=", 1)[1]
+            i += 1
+            continue
+        if arg.startswith("-"):
+            raise ValueError(f"Unknown flag: {arg}")
+        if input_file is not None:
+            raise ValueError("Only one input .ynfo file can be provided")
+        input_file = arg
+        i += 1
+
+    if input_file is None:
+        raise ValueError("Missing input .ynfo file")
+
+    return input_file, schema_file
 
 class RefResolver:
     def __init__(self):
@@ -20,9 +322,7 @@ class RefResolver:
             path = filename if filename.endswith('.ynfo') else f"{filename}.ynfo"
             if not os.path.exists(path):
                 raise FileNotFoundError(f"File not found: {path}")
-            with open(path, "r") as f:
-                content = f.read()
-            lines = content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+            lines = read_text_file(path)
             self.cache[filename] = parse_lines(lines, allow_top_level_scalar=True)
         return self.cache[filename]
 
@@ -743,16 +1043,23 @@ def is_ip(value: str) -> bool:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python parser.py <filename.ynfo>")
+        print("Usage: python parser.py [-s schema.yns|--schema schema.yns] <filename.ynfo>")
         sys.exit(1)
 
-    input_file = sys.argv[1]
-    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    input_file_arg, schema_file_arg = parse_cli_args(sys.argv[1:])
+    input_path = normalize_input_path(input_file_arg, '.ynfo')
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
     if re.match(r"^[0-9]", base_name):
         raise ValueError(f"Invalid filename '{base_name}': filenames cannot start with a number.")
 
     resolver = RefResolver()
-    raw_data = resolver.get_file_data(base_name)
+    raw_lines = read_text_file(input_path)
+    raw_data = parse_lines(raw_lines, allow_top_level_scalar=True)
+    resolver.cache[base_name] = raw_data
     final_data = resolver.process(raw_data, base_name)
+
+    if schema_file_arg:
+        schema_fields = load_yns_schema(schema_file_arg)
+        validate_against_yns_schema(final_data, schema_fields)
 
     pprint(final_data)
