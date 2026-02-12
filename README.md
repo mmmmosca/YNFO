@@ -190,7 +190,7 @@ You can look at this snippet code to see a practical example:
 
 .my_string [String] : "this is a string"
 
-.should_produce_an_error [Bool] : true
+.should_produce_an_error [Float] : true
 
 .any_type [Any] : 3.14
 
