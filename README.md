@@ -171,13 +171,13 @@ Typing a text enclosed by angled brackets (`<>`) will turn that text into a comm
 <this is a comment>
 ```
 
-## Schema validation
-YNFO also provides a built-in schema validation system, more specifically it's inline, type-based schema validation.
+## Type enforcement
+YNFO can also enforce types onto fields and lists.
 You can specify any of the already mentioned types (String, Int, Float, Bool and Ip) with the addition of a few more:
 - List + one or more optional types (List type included) : Checks if the field is a list containing a certain type of elements; for example you can specify that a list can only contain integers by using this syntax `[List][Int]`
 - Any : Checks is the field is of any type (it's not necessary to specify)
 
-To write schema validation you can write the type enclosed by square brackets before any colon, like this: `.a_field [Any] : 0`.
+To enforce a type you can write the type enclosed by square brackets before any colon, like this: `.a_field [Any] : 0`.
 
 You can look at this snippet code to see a practical example:
 ```
