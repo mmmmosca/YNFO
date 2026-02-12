@@ -6,6 +6,7 @@
 ## How to start
 To start using YNS you need to create a file with the extension `.yns`.
 Once you created it you can start writing your schema.
+To the use it with the parser use the `-s` or `--schema` flags and the path to your schema file.
 
 ---
 
