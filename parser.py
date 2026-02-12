@@ -6,6 +6,9 @@ from typing import Any, List, Dict, Optional
 
 MISSING = object()
 
+class QuotedString(str):
+    pass
+
 class RefResolver:
     def __init__(self):
         self.cache: Dict[str, Any] = {}
@@ -48,6 +51,8 @@ class RefResolver:
             return {k: self.process(v, current_file) for k, v in data.items()}
         elif isinstance(data, list):
             return [self.process(i, current_file) for i in data]
+        elif isinstance(data, QuotedString):
+            return str(data)
         elif isinstance(data, str):
             if is_ip(data):
                 return data
@@ -144,6 +149,11 @@ def parse_lines(
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
                 
                 
+                clean_next = strip_inline_comment(next_line.rstrip())
+                if not clean_next.strip():
+                    nested_lines.append(next_line)
+                    i += 1
+                    continue
                 if next_indent <= current_indent:
                     break
                 
@@ -197,6 +207,11 @@ def parse_lines(
                 next_without_tabs = next_line.replace('\t', '    ')
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
 
+                clean_next = strip_inline_comment(next_line.rstrip())
+                if not clean_next.strip():
+                    nested_lines.append(next_line)
+                    i += 1
+                    continue
                 if next_indent <= current_indent:
                     break
 
@@ -334,6 +349,11 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                 next_without_tabs = next_line.replace('\t', '    ')
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
                 
+                clean_next = strip_inline_comment(next_line.rstrip())
+                if not clean_next.strip():
+                    nested_lines.append(next_line)
+                    i += 1
+                    continue
                 if next_indent <= current_indent:
                     break
                 
@@ -401,6 +421,11 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                 next_without_tabs = next_line.replace('\t', '    ')
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
 
+                clean_next = strip_inline_comment(next_line.rstrip())
+                if not clean_next.strip():
+                    nested_lines.append(next_line)
+                    i += 1
+                    continue
                 if next_indent <= current_indent:
                     break
 
@@ -475,7 +500,7 @@ def parse_value(value: str) -> Any:
         return ""
 
     if value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
+        return QuotedString(value[1:-1])
 
     if is_ip(value):
         return IP(value)
