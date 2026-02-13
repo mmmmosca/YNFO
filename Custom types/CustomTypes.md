@@ -1,7 +1,7 @@
-# How to register a custom type for YNFO
+# How to register a custom type for YNFO and YNS
 ---
 
-To register a custom type for YNFO you need to create a python file, make sure that the name of the file follows this structure:
+To register a custom type for YNFO and YNS you need to create a python file, make sure that the name of the file follows this structure:
 `<your custom type name>_type.py`
 
 Once you created the file you can use the template in `custom_type.py`.
