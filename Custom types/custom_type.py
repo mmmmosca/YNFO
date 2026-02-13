@@ -1,7 +1,7 @@
 import re
 import parser
 
-url_re = re.compile(r"") #Insert here the regex
+custom_re = re.compile(r"") #Insert here the regex
 
 parser.register_custom_type(
     name= "Type here the name of your type",
