@@ -2,13 +2,67 @@ import sys
 import re
 import os
 import copy
+import importlib.util
 from pprint import pprint
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Callable
 
 MISSING = object()
+PARSER_NO_MATCH = object()
 
 class QuotedString(str):
     pass
+
+
+SchemaTypeValidator = Callable[[Any], bool]
+LiteralParser = Callable[[str], Any]
+
+
+SCHEMA_TYPE_VALIDATORS: Dict[str, SchemaTypeValidator] = {}
+LITERAL_PARSERS: List[LiteralParser] = []
+
+
+def normalize_schema_type_name(name: str) -> str:
+    return name.strip().casefold()
+
+
+def register_schema_type(name: str, validator: SchemaTypeValidator) -> None:
+    SCHEMA_TYPE_VALIDATORS[normalize_schema_type_name(name)] = validator
+
+
+def register_value_parser(parser: LiteralParser, prepend: bool = False) -> None:
+    if prepend:
+        LITERAL_PARSERS.insert(0, parser)
+    else:
+        LITERAL_PARSERS.append(parser)
+
+
+def register_custom_type(
+    name: str,
+    validator: SchemaTypeValidator,
+    parser: Optional[LiteralParser] = None,
+    prepend_parser: bool = False,
+) -> None:
+    register_schema_type(name, validator)
+    if parser is not None:
+        register_value_parser(parser, prepend=prepend_parser)
+
+
+def load_custom_type_plugins(plugin_dir: Optional[str] = None) -> None:
+    base_dir = plugin_dir or os.path.dirname(os.path.abspath(__file__))
+    for entry in sorted(os.listdir(base_dir)):
+        if not entry.endswith("_type.py"):
+            continue
+        plugin_path = os.path.join(base_dir, entry)
+        if not os.path.isfile(plugin_path):
+            continue
+
+        module_name = f"_ynfo_type_plugin_{os.path.splitext(entry)[0]}"
+        spec = importlib.util.spec_from_file_location(module_name, plugin_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Unable to load type plugin: {plugin_path}")
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
 
 
 def read_text_file(path: str) -> List[str]:
@@ -54,14 +108,15 @@ def constraint_target_type(tokens: List[str]) -> Optional[str]:
         return None
 
     idx = 0
-    while idx < len(tokens) and tokens[idx] == "List":
+    while idx < len(tokens) and normalize_schema_type_name(tokens[idx]) == "list":
         idx += 1
 
     if idx != len(tokens) - 1:
         return None
 
     terminal = tokens[idx]
-    if terminal in ("Int", "Float"):
+    terminal_norm = normalize_schema_type_name(terminal)
+    if terminal_norm in ("int", "float"):
         return terminal
     return None
 
@@ -794,31 +849,56 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
     return items
 
 
+def parse_quoted_string_literal(value: str) -> Any:
+    if value.startswith('"') and value.endswith('"'):
+        return QuotedString(value[1:-1])
+    return PARSER_NO_MATCH
+
+
+def parse_ip_literal(value: str) -> Any:
+    if is_ip(value):
+        return IP(value)
+    return PARSER_NO_MATCH
+
+
+def parse_float_literal(value: str) -> Any:
+    if re.match(r"^[+-]?[0-9]+\.[0-9]+$", value):
+        return float(value)
+    return PARSER_NO_MATCH
+
+
+def parse_int_literal(value: str) -> Any:
+    if re.match(r"^[+-]?[0-9]+$", value):
+        return int(value)
+    return PARSER_NO_MATCH
+
+
+def parse_bool_or_null_literal(value: str) -> Any:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "null":
+        return None
+    return PARSER_NO_MATCH
+
+
+def parse_reference_literal(value: str) -> Any:
+    if re.match(r"^[\w\-]+\.[\w\.\[\]\-]+$", value):
+        return value
+    return PARSER_NO_MATCH
+
+
 def parse_value(value: str) -> Any:
     value = value.strip()
     if not value:
         return ""
 
-    if value.startswith('"') and value.endswith('"'):
-        return QuotedString(value[1:-1])
-
-    if is_ip(value):
-        return IP(value)
-
-    if re.match(r"^[+-]?[0-9]+\.[0-9]+$", value):
-        return float(value)
-    elif re.match(r"^[+-]?[0-9]+$", value):
-        return int(value)
-
-    if value.lower() == "true":
-        return True
-    elif value.lower() == "false":
-        return False
-    elif value.lower() == "null":
-        return None
-
-    if re.match(r"^[\w\-]+\.[\w\.\[\]\-]+$", value):
-        return value
+    for parser in LITERAL_PARSERS:
+        parsed = parser(value)
+        if parsed is not PARSER_NO_MATCH:
+            return parsed
 
     raise SyntaxError(f"Unquoted or invalid value: {value}")
 
@@ -882,29 +962,30 @@ def parse_schema_tokens(text: str) -> List[str]:
 
 
 def validate_schema_tokens(tokens: List[str]) -> None:
-    allowed = {"String", "Float", "Int", "Bool", "Any", "List", "Ip"}
+    allowed = set(SCHEMA_TYPE_VALIDATORS.keys())
     for t in tokens:
-        if t not in allowed:
+        if normalize_schema_type_name(t) not in allowed:
             raise SyntaxError(f"Unknown schema type: {t}")
-    if tokens and tokens[0] != "List" and len(tokens) > 1:
+    if tokens and normalize_schema_type_name(tokens[0]) != "list" and len(tokens) > 1:
         raise SyntaxError("Only List can chain multiple types.")
 
 
 def build_schema(tokens: List[str]) -> Dict[str, Any]:
     if not tokens:
         return {"kind": "any"}
-    first = tokens[0]
-    if first != "List":
+    first = normalize_schema_type_name(tokens[0])
+    if first != "list":
         return {"kind": "type", "name": first}
     if len(tokens) == 1:
         return {"kind": "list", "element": {"kind": "any"}}
-    if tokens[1] == "List":
+    if normalize_schema_type_name(tokens[1]) == "list":
         return {"kind": "list", "element": build_schema(tokens[1:])}
     element_types = []
     for t in tokens[1:]:
-        if t == "List":
+        t_norm = normalize_schema_type_name(t)
+        if t_norm == "list":
             raise SyntaxError("List must be the first type in a list schema.")
-        element_types.append({"kind": "type", "name": t})
+        element_types.append({"kind": "type", "name": t_norm})
     return {"kind": "list", "element": {"kind": "union", "types": element_types}}
 
 
@@ -921,22 +1002,11 @@ def validate_value(schema: Dict[str, Any], value: Any) -> bool:
     if kind == "any":
         return True
     if kind == "type":
-        name = schema["name"]
-        if name == "String":
-            return isinstance(value, str) and not isinstance(value, IP)
-        if name == "Ip":
-            return isinstance(value, IP)
-        if name == "Float":
-            return isinstance(value, float)
-        if name == "Int":
-            return isinstance(value, int) and not isinstance(value, bool)
-        if name == "Bool":
-            return isinstance(value, bool)
-        if name == "Any":
-            return True
-        if name == "List":
-            return isinstance(value, list)
-        return False
+        name = normalize_schema_type_name(schema["name"])
+        validator = SCHEMA_TYPE_VALIDATORS.get(name)
+        if validator is None:
+            return False
+        return validator(value)
     if kind == "union":
         return any(validate_value(t, value) for t in schema["types"])
     if kind == "list":
@@ -1039,12 +1109,34 @@ def is_ip(value: str) -> bool:
     return True
 
 
+def initialize_type_system() -> None:
+    register_schema_type("String", lambda value: isinstance(value, str) and not isinstance(value, IP))
+    register_schema_type("Ip", lambda value: isinstance(value, IP))
+    register_schema_type("Float", lambda value: isinstance(value, float))
+    register_schema_type("Int", lambda value: isinstance(value, int) and not isinstance(value, bool))
+    register_schema_type("Bool", lambda value: isinstance(value, bool))
+    register_schema_type("Any", lambda value: True)
+    register_schema_type("List", lambda value: isinstance(value, list))
+
+    register_value_parser(parse_quoted_string_literal)
+    register_value_parser(parse_ip_literal)
+    register_value_parser(parse_float_literal)
+    register_value_parser(parse_int_literal)
+    register_value_parser(parse_bool_or_null_literal)
+    register_value_parser(parse_reference_literal)
+
+
+initialize_type_system()
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python parser.py [-s schema.yns|--schema schema.yns] <filename.ynfo>")
         sys.exit(1)
+
+    # Ensure plugins importing "parser" resolve to this running module.
+    sys.modules["parser"] = sys.modules[__name__]
+    load_custom_type_plugins()
 
     input_file_arg, schema_file_arg = parse_cli_args(sys.argv[1:])
     input_path = normalize_input_path(input_file_arg, '.ynfo')
