@@ -134,9 +134,15 @@ def normalize_schema_default_value(value: Any) -> Any:
 def split_schema_declaration(
     text: str
 ) -> tuple[str, List[str], bool, Optional[Dict[str, float]], Any]:
-    parts = text.split(None, 1)
-    field_name = parts[0].strip() if parts else ""
-    rest = parts[1].strip() if len(parts) > 1 else ""
+    # The field name ends at the first whitespace OR ':' — a declaration like
+    # "server_info:" (no space before the colon) must not swallow the colon
+    # into the name, or it won't match the field name the .ynfo data parser
+    # produces for the same field.
+    name_end = 0
+    while name_end < len(text) and text[name_end] not in (' ', '\t', ':'):
+        name_end += 1
+    field_name = text[:name_end].strip()
+    rest = text[name_end:].strip()
 
     tokens = []
     optional = False
@@ -426,6 +432,25 @@ class RefResolver:
         return data
 
 
+def has_nested_content(lines: List[str]) -> bool:
+    """True if any line (once comments are stripped) has real content.
+
+    Blank lines get collected into nested_lines/child_lines regardless of
+    indentation (their indentation is meaningless), so a run of blank lines
+    at end-of-file must not be mistaken for an actual nested block.
+    """
+    return any(strip_inline_comment(line.rstrip()).strip() for line in lines)
+
+
+def first_meaningful_line(lines: List[str]) -> Optional[str]:
+    """First line with real content once comments/whitespace are stripped."""
+    for line in lines:
+        clean = strip_inline_comment(line.rstrip())
+        if clean.strip():
+            return clean
+    return None
+
+
 def parse_lines(
     lines: List[str],
     indent: int = 0,
@@ -435,25 +460,25 @@ def parse_lines(
     seen_fields = set()
     seen_unnamed = False
     i = 0
-    
+
     while i < len(lines):
         line = lines[i]
-        
+
         line_without_tabs = line.replace('\t', '    ')
         current_indent = len(line_without_tabs) - len(line_without_tabs.lstrip(' '))
-        
+
         if current_indent < indent:
             break
-            
+
         if not line.strip():
             i += 1
             continue
-        
+
         clean_line = strip_inline_comment(line.rstrip())
         if not clean_line.strip():
             i += 1
             continue
-        
+
         if clean_line.lstrip().startswith('.'):
             field_content = clean_line.lstrip()[1:].lstrip()
 
@@ -461,7 +486,7 @@ def parse_lines(
                 raise SyntaxError(f"Missing ':' in field declaration: {clean_line.strip()}")
 
             if ':' in field_content:
-                
+
                 colon_pos = -1
                 in_quotes = False
                 for idx, ch in enumerate(field_content):
@@ -470,7 +495,7 @@ def parse_lines(
                     elif ch == ':' and not in_quotes:
                         colon_pos = idx
                         break
-                
+
                 if colon_pos >= 0:
                     field_schema_part = field_content[:colon_pos].strip()
                     value_part = field_content[colon_pos + 1:].strip()
@@ -493,17 +518,17 @@ def parse_lines(
             if field_name in seen_fields:
                 raise ValueError(f"Duplicate key: {field_name}")
             seen_fields.add(field_name)
-            
-            
+
+
             nested_lines = []
-            
-            
+
+
             while i < len(lines):
                 next_line = lines[i]
                 next_without_tabs = next_line.replace('\t', '    ')
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
-                
-                
+
+
                 clean_next = strip_inline_comment(next_line.rstrip())
                 if not clean_next.strip():
                     nested_lines.append(next_line)
@@ -511,10 +536,10 @@ def parse_lines(
                     continue
                 if next_indent <= current_indent:
                     break
-                
+
                 nested_lines.append(next_line)
                 i += 1
-            
+
             if value_part:
 
                 value = parse_value_or_list(value_part)
@@ -524,9 +549,8 @@ def parse_lines(
                 if nested_lines:
                     pass
             else:
-                if nested_lines:
-                    first_nested_clean = strip_inline_comment(nested_lines[0].rstrip())
-
+                first_nested_clean = first_meaningful_line(nested_lines)
+                if first_nested_clean is not None:
                     if first_nested_clean.lstrip().startswith('.'):
                         value = parse_lines(
                             nested_lines,
@@ -576,8 +600,8 @@ def parse_lines(
             if item_content:
                 item_value = parse_value_or_list(item_content)
                 validate_schema(schema_tokens, item_value, "<unnamed>")
-                if nested_lines:
-                    first_nested = strip_inline_comment(nested_lines[0].rstrip())
+                first_nested = first_meaningful_line(nested_lines)
+                if first_nested is not None:
                     if first_nested.lstrip().startswith('.'):
                         nested_obj = parse_lines(
                             nested_lines,
@@ -595,8 +619,8 @@ def parse_lines(
                 else:
                     entries.append(("unnamed", item_value))
             else:
-                if nested_lines:
-                    first_nested = strip_inline_comment(nested_lines[0].rstrip())
+                first_nested = first_meaningful_line(nested_lines)
+                if first_nested is not None:
                     if first_nested.lstrip().startswith('.'):
                         unnamed_value = parse_lines(
                             nested_lines,
@@ -622,10 +646,10 @@ def parse_lines(
                     current_line = lines[i]
                     line_without_tabs = current_line.replace('\t', '    ')
                     line_indent = len(line_without_tabs) - len(line_without_tabs.lstrip(' '))
-                    
+
                     if line_indent != current_indent:
                         break
-                    
+
                     clean_current = strip_inline_comment(current_line.rstrip())
                     if clean_current.strip():
                         if clean_current.lstrip().startswith('-'):
@@ -674,20 +698,20 @@ def parse_lines(
 def parse_list(lines: List[str], indent: int) -> List[Any]:
     items = []
     i = 0
-    
+
     while i < len(lines):
         line = lines[i]
-        
+
         line_without_tabs = line.replace('\t', '    ')
         current_indent = len(line_without_tabs) - len(line_without_tabs.lstrip(' '))
-        
+
         if current_indent < indent:
             break
-            
+
         if not line.strip():
             i += 1
             continue
-            
+
         clean_line = strip_inline_comment(line.rstrip())
         if not clean_line.strip():
             i += 1
@@ -695,15 +719,15 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
 
         if clean_line.lstrip().startswith('-'):
             item_content = clean_line.lstrip()[1:].strip()
-            
+
             nested_lines = []
             i += 1
-            
+
             while i < len(lines):
                 next_line = lines[i]
                 next_without_tabs = next_line.replace('\t', '    ')
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
-                
+
                 clean_next = strip_inline_comment(next_line.rstrip())
                 if not clean_next.strip():
                     nested_lines.append(next_line)
@@ -711,16 +735,15 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                     continue
                 if next_indent <= current_indent:
                     break
-                
+
                 nested_lines.append(next_line)
                 i += 1
-            
+
             if item_content:
                 item_value = parse_value_or_list(item_content)
-                
-                if nested_lines:
-                    first_nested = strip_inline_comment(nested_lines[0].rstrip())
-                    
+
+                first_nested = first_meaningful_line(nested_lines)
+                if first_nested is not None:
                     if first_nested.lstrip().startswith('.'):
                         nested_obj = parse_lines(
                             nested_lines,
@@ -743,9 +766,8 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                 else:
                     items.append(item_value)
             else:
-                if nested_lines:
-                    first_nested = strip_inline_comment(nested_lines[0].rstrip())
-                    
+                first_nested = first_meaningful_line(nested_lines)
+                if first_nested is not None:
                     if first_nested.lstrip().startswith('.'):
                         items.append(
                             parse_lines(
@@ -790,8 +812,8 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
             if item_content:
                 item_value = parse_value_or_list(item_content)
                 validate_schema(schema_tokens, item_value, "<unnamed>")
-                if nested_lines:
-                    first_nested = strip_inline_comment(nested_lines[0].rstrip())
+                first_nested = first_meaningful_line(nested_lines)
+                if first_nested is not None:
                     if first_nested.lstrip().startswith('.'):
                         nested_obj = parse_lines(nested_lines, indent=current_indent + 1, allow_top_level_scalar=False)
                         if isinstance(item_value, dict):
@@ -805,8 +827,8 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
                 else:
                     items.append(item_value)
             else:
-                if nested_lines:
-                    first_nested = strip_inline_comment(nested_lines[0].rstrip())
+                first_nested = first_meaningful_line(nested_lines)
+                if first_nested is not None:
                     if first_nested.lstrip().startswith('.'):
                         unnamed_value = parse_lines(nested_lines, indent=current_indent + 1, allow_top_level_scalar=False)
                         validate_schema(schema_tokens, unnamed_value, "<unnamed>")
@@ -821,18 +843,18 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
         elif clean_line.lstrip().startswith('.'):
             nested_lines = [line]
             i += 1
-            
+
             while i < len(lines):
                 next_line = lines[i]
                 next_without_tabs = next_line.replace('\t', '    ')
                 next_indent = len(next_without_tabs) - len(next_without_tabs.lstrip(' '))
-                
+
                 if next_indent < current_indent:
                     break
-                
+
                 nested_lines.append(next_line)
                 i += 1
-            
+
             items.append(
                 parse_lines(
                     nested_lines,
@@ -845,7 +867,7 @@ def parse_list(lines: List[str], indent: int) -> List[Any]:
             for token in tokens:
                 items.append(parse_value(token))
             i += 1
-    
+
     return items
 
 
@@ -910,7 +932,7 @@ def parse_value_or_list(text: str) -> Any:
     tokens = tokenize_values(text)
     if len(tokens) == 1:
         return parse_value(tokens[0])
-    
+
     return [parse_value(t) for t in tokens]
 
 
@@ -1019,14 +1041,14 @@ def validate_value(schema: Dict[str, Any], value: Any) -> bool:
 
 def parse_inline_values(lines: List[str], indent: int) -> List[Any]:
     items = []
-    
+
     for line in lines:
         clean_line = strip_inline_comment(line.rstrip())
         if clean_line.strip():
             tokens = tokenize_values(clean_line.strip())
             for token in tokens:
                 items.append(parse_value(token))
-    
+
     return items
 
 
@@ -1057,7 +1079,7 @@ def strip_inline_comment(line: str) -> str:
         if not in_comment:
             out.append(ch)
         i += 1
-    
+
     return ''.join(out)
 
 
@@ -1066,7 +1088,7 @@ def tokenize_values(text: str) -> List[str]:
     buf = []
     in_quotes = False
     i = 0
-    
+
     while i < len(text):
         ch = text[i]
         if ch == '"':
@@ -1082,7 +1104,7 @@ def tokenize_values(text: str) -> List[str]:
             continue
         buf.append(ch)
         i += 1
-    
+
     if buf:
         tokens.append(''.join(buf))
 
@@ -1131,7 +1153,7 @@ initialize_type_system()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python parser.py [-s schema.yns|--schema schema.yns] <filename.ynfo>")
+        print("Usage: ynfo [-s schema.yns|--schema schema.yns] <filename.ynfo>")
         sys.exit(1)
 
     # Ensure plugins importing "parser" resolve to this running module.
