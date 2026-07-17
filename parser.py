@@ -134,10 +134,6 @@ def normalize_schema_default_value(value: Any) -> Any:
 def split_schema_declaration(
     text: str
 ) -> tuple[str, List[str], bool, Optional[Dict[str, float]], Any]:
-    # The field name ends at the first whitespace OR ':' — a declaration like
-    # "server_info:" (no space before the colon) must not swallow the colon
-    # into the name, or it won't match the field name the .ynfo data parser
-    # produces for the same field.
     name_end = 0
     while name_end < len(text) and text[name_end] not in (' ', '\t', ':'):
         name_end += 1
@@ -433,12 +429,6 @@ class RefResolver:
 
 
 def has_nested_content(lines: List[str]) -> bool:
-    """True if any line (once comments are stripped) has real content.
-
-    Blank lines get collected into nested_lines/child_lines regardless of
-    indentation (their indentation is meaningless), so a run of blank lines
-    at end-of-file must not be mistaken for an actual nested block.
-    """
     return any(strip_inline_comment(line.rstrip()).strip() for line in lines)
 
 
@@ -568,7 +558,6 @@ def parse_lines(
                 validate_schema(schema_tokens, value, field_name)
                 entries.append(("field", field_name, value))
         elif clean_line.lstrip().startswith(':') or clean_line.lstrip().startswith('['):
-            # Unnamed field/list item at this level
             if clean_line.lstrip().startswith(':'):
                 item_content = clean_line.lstrip()[1:].strip()
                 schema_tokens, item_content = parse_unnamed_schema(item_content)
